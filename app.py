@@ -5,6 +5,7 @@ import re
 import altair as alt
 import pandas as pd
 import streamlit as st
+from supabase import create_client
 
 st.set_page_config(page_title="晴途", page_icon="🌤️", layout="centered", initial_sidebar_state="collapsed")
 with open(Path(__file__).with_name("styles.css"), encoding="utf-8") as f:
@@ -12,6 +13,54 @@ with open(Path(__file__).with_name("styles.css"), encoding="utf-8") as f:
 
 PAGES = ["首页", "AI量表", "情绪对话", "健康档案", "医生问诊", "正向社区"]
 ICONS = ["🏠", "📝", "💬", "📊", "🩺", "🌱"]
+def get_supabase():
+    if "supabase_client" not in st.session_state:
+        st.session_state.supabase_client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    return st.session_state.supabase_client
+
+def user_id(): return st.session_state.auth_user.id
+
+def insert_own(table, data):
+    return get_supabase().table(table).insert({**data,"user_id":user_id()}).execute().data
+
+def fetch_own(table, **filters):
+    q=get_supabase().table(table).select("*").eq("user_id",user_id())
+    for key,value in filters.items(): q=q.eq(key,value)
+    return q.order("created_at",desc=True).execute().data
+
+def delete_own(table, row_id):
+    return get_supabase().table(table).delete().eq("id",row_id).eq("user_id",user_id()).execute()
+
+def auth_screen():
+    st.markdown('<div class="hero"><h2>欢迎来到晴途 🌤️</h2><div>登录后，你的记录会安全地保存在云端，并与其他用户隔离。</div></div>',unsafe_allow_html=True)
+    login_tab,signup_tab=st.tabs(["登录","注册"])
+    with login_tab:
+        with st.form("login_form"):
+            email=st.text_input("邮箱",key="login_email")
+            password=st.text_input("密码",type="password",key="login_password")
+            login=st.form_submit_button("登录晴途",type="primary")
+        if login:
+            try:
+                result=get_supabase().auth.sign_in_with_password({"email":email.strip(),"password":password})
+                st.session_state.auth_user=result.user; st.success("登录成功"); st.rerun()
+            except Exception: st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+    with signup_tab:
+        with st.form("signup_form"):
+            email=st.text_input("注册邮箱",key="signup_email")
+            password=st.text_input("设置密码（至少 8 位）",type="password",key="signup_password")
+            confirm=st.text_input("再次输入密码",type="password")
+            agree=st.checkbox("我已阅读隐私声明和非医疗诊断声明")
+            signup=st.form_submit_button("创建账号",type="primary")
+        if signup:
+            if len(password)<8 or password!=confirm or not agree: st.error("请设置至少 8 位且两次一致的密码，并确认声明。")
+            else:
+                try:
+                    result=get_supabase().auth.sign_up({"email":email.strip(),"password":password})
+                    if result.session:
+                        st.session_state.auth_user=result.user; st.success("注册成功"); st.rerun()
+                    else: st.success("注册成功，请前往邮箱点击验证链接后再登录。")
+                except Exception: st.error("注册失败。该邮箱可能已注册，或请求过于频繁。")
+    safety(); footer()
 
 SCALES = {
     "SDS 抑郁自评量表": {
@@ -42,9 +91,7 @@ SCALES = {
 OPTIONS = ["没有或很少", "少部分时间", "相当多时间", "绝大部分时间"]
 
 def init_state():
-    defaults = {"page":"首页", "chat":[], "assessments":[], "posts":[
-        {"topic":"康复打卡", "text":"今天散步了 20 分钟，也认真吃了晚饭。慢慢来就很好。", "likes":18},
-        {"topic":"暖心故事", "text":"第一次把真实感受告诉朋友，原来被接住是这样的感觉。", "likes":31}], "consults":[]}
+    defaults = {"page":"首页", "chat":[], "consults":[]}
     for k,v in defaults.items():
         if k not in st.session_state: st.session_state[k] = v
 
@@ -64,7 +111,15 @@ def home():
     st.markdown('<div class="hero"><h2>早上好，愿你今天轻一点 🌤️</h2><div>此刻的感受值得被看见。先从一次温柔的自我照顾开始。</div></div>', unsafe_allow_html=True)
     mood = st.select_slider("今天的心情天气", ["暴雨","阴天","多云","微晴","晴朗"], value="微晴")
     if st.button("记录此刻心情", type="primary"):
-        st.session_state["today_mood"] = mood; st.toast(f"已记录：{mood}，谢谢你照顾自己的感受")
+        insert_own("moods",{"mood":mood})
+        st.session_state["today_mood"] = mood; st.toast(f"已记录：{mood}，下次打开仍会保留")
+    with st.form("home_search", border=False):
+        s1,s2=st.columns([5,1])
+        query=s1.text_input("搜索",label_visibility="collapsed",placeholder="搜索测评、医生、社区与功能……")
+        search=s2.form_submit_button("🔍",help="搜索并打开结果页")
+    if search:
+        if query.strip(): st.session_state.search_query=query.strip(); go("搜索结果"); st.rerun()
+        else: st.warning("请输入想搜索的内容。")
     st.subheader("快捷陪伴")
     c1,c2 = st.columns(2)
     with c1:
@@ -98,7 +153,7 @@ def assessment():
             score = round(raw*1.25) if scale["short"] in {"SDS","SAS"} else raw
             level = next(label for cutoff,label in scale["bands"] if score<=cutoff)
             result={"date":date.today().isoformat(),"scale":scale["short"],"score":score,"level":level}
-            st.session_state.assessments.append(result)
+            insert_own("assessments",{"scale":scale["short"],"score":score,"level":level})
             st.success("报告已生成，并已加入历史测评")
             st.subheader("你的情绪晴雨图")
             max_score=100 if scale["short"] in {"SDS","SAS"} else 24
@@ -133,7 +188,9 @@ def chat():
     if c1.button("清空对话"):
         st.session_state.chat=[]; st.toast("本次对话已清空"); st.rerun()
     if c2.button("保存到健康档案"):
-        st.session_state["chat_saved"]=datetime.now().strftime("%Y-%m-%d %H:%M"); st.toast("已保存本次对话摘要标记")
+        summary="\n".join(f"{m['role']}: {m['text']}" for m in st.session_state.chat[-6:]) or "空白对话"
+        insert_own("notes",{"category":"AI对话摘要","content":summary})
+        st.toast("已持久保存本次对话摘要")
     safety()
 
 def records():
@@ -149,9 +206,30 @@ def records():
     files=st.file_uploader("上传病历、处方或检查报告",type=["pdf","png","jpg","jpeg"],accept_multiple_files=True,help="单文件不超过 20MB；Demo 仅显示文件名")
     if files and st.button("确认保存文件记录",type="primary"):
         st.session_state["medical_files"]=[f.name for f in files]; st.success(f"已记录 {len(files)} 个文件（Demo 不做云端上传）")
+    st.subheader("心情记录")
+    moods=fetch_own("moods")
+    if moods:
+        for row in moods:
+            a,b=st.columns([5,1]); a.write(f"{row['created_at'][:16]}　**{row['mood']}**")
+            if b.button("删除",key=f"del_mood_{row['id']}"):
+                delete_own("moods",row['id']); st.toast("心情记录已删除"); st.rerun()
+    else: st.info("暂无心情记录。")
     st.subheader("历史测评")
-    if st.session_state.assessments: st.dataframe(pd.DataFrame(st.session_state.assessments),hide_index=True,use_container_width=True)
+    assessments=fetch_own("assessments")
+    if assessments:
+        for row in assessments:
+            a,b=st.columns([5,1]); a.write(f"{row['created_at'][:10]}　**{row['scale']} · {row['score']} 分**　{row['level']}")
+            if b.button("删除",key=f"del_assess_{row['id']}"):
+                delete_own("assessments",row['id']); st.toast("测评记录已删除"); st.rerun()
     else: st.info("还没有测评记录。完成任一量表后会显示在这里。")
+    notes=fetch_own("notes")
+    if notes:
+        st.subheader("保存的记录")
+        for row in notes:
+            with st.expander(f"{row['category']} · {row['created_at'][:16]}"):
+                st.write(row["content"])
+                if st.button("删除这条记录",key=f"del_note_{row['id']}"):
+                    delete_own("notes",row['id']); st.rerun()
     if st.button("去完成一次测评"): go("AI量表"); st.rerun()
 
 def doctors():
@@ -161,19 +239,32 @@ def doctors():
     for i,(n,title,spec,rating) in enumerate(docs):
         st.markdown(f'<div class="card"><b>👩‍⚕️ {n}</b> <span class="tag">★ {rating}</span><div>{title}</div><div class="muted">{spec}</div></div>',unsafe_allow_html=True)
         if st.button(f"选择 {n} · 发起图文咨询",key=f"doc{i}"):
-            st.session_state.selected_doc=n; st.success(f"已选择 {n}，请在下方填写咨询信息")
-    if "selected_doc" in st.session_state:
-        with st.form("consult"):
-            st.write(f"咨询对象：**{st.session_state.selected_doc}**")
-            concern=st.text_area("主要困扰",placeholder="请描述持续时间、对生活的影响及希望获得的帮助")
-            report=st.file_uploader("上传测评/病历报告（可选）",type=["pdf","png","jpg","jpeg"])
-            consent=st.checkbox("我已阅读隐私说明并同意为本次咨询提供上述资料")
-            ok=st.form_submit_button("提交咨询申请",type="primary")
-        if ok:
-            if not concern.strip() or not consent: st.error("请填写主要困扰并确认授权。")
-            else:
-                st.session_state.consults.append({"医生":st.session_state.selected_doc,"时间":datetime.now().strftime("%m-%d %H:%M"),"状态":"等待接诊"})
-                st.success("申请已提交。Demo 状态：预计 30 分钟内响应。")
+            st.session_state.selected_doc=n; go("咨询医生"); st.rerun()
+    safety()
+
+def consultation():
+    doctor=st.session_state.get("selected_doc")
+    if not doctor: go("医生问诊"); st.rerun()
+    if st.button("← 返回医生列表"): go("医生问诊"); st.rerun()
+    st.title(f"与{doctor}咨询")
+    st.markdown('<div class="notice">已进入独立咨询页面。请尽量描述持续时间、生活影响和希望获得的帮助。</div>',unsafe_allow_html=True)
+    with st.form("consult"):
+        concern=st.text_area("主要困扰",height=150,placeholder="请描述你的情况……")
+        report=st.file_uploader("上传测评/病历报告（可选）",type=["pdf","png","jpg","jpeg"])
+        consent=st.checkbox("我已阅读隐私说明并同意为本次咨询提供上述资料")
+        ok=st.form_submit_button("提交咨询申请",type="primary")
+    if ok:
+        if not concern.strip() or not consent: st.error("请填写主要困扰并确认授权。")
+        else:
+            insert_own("consults",{"doctor":doctor,"concern":concern.strip(),"report_name":report.name if report else None,"status":"等待接诊"})
+            st.success("咨询已保存并提交。Demo 状态：等待接诊。")
+    history=fetch_own("consults",doctor=doctor)
+    if history:
+        st.subheader("咨询记录")
+        for row in history:
+            a,b=st.columns([5,1]); a.write(f"{row['created_at'][:16]}　{row['status']}｜{row['concern'][:35]}")
+            if b.button("删除",key=f"del_consult_{row['id']}"):
+                delete_own("consults",row['id']); st.rerun()
     safety()
 
 def community():
@@ -181,11 +272,16 @@ def community():
     st.caption("匿名、友善、非评判。分享经验，不替代专业建议。")
     tab1,tab2,tab3=st.tabs(["全部","康复打卡","暖心故事"])
     def show(filter_name=None):
-        for idx,p in enumerate(st.session_state.posts):
+        posts=get_supabase().table("posts").select("*").order("created_at",desc=True).execute().data
+        for p in posts:
             if filter_name and p["topic"]!=filter_name: continue
-            card(f"匿名晴友 · {p['topic']}",p["text"],f"🤍 {p['likes']} 次拥抱")
-            if st.button("送一个拥抱",key=f"like_{filter_name}_{idx}"):
-                p["likes"]+=1; st.toast("你的温暖已送达"); st.rerun()
+            card(f"匿名晴友 · {p['topic']}",p["content"],f"🤍 {p['likes']} 次拥抱")
+            c1,c2=st.columns(2)
+            if c1.button("送一个拥抱",key=f"like_{filter_name}_{p['id']}"):
+                try: get_supabase().rpc("increment_post_likes",{"post_id":p['id']}).execute(); st.toast("你的温暖已送达"); st.rerun()
+                except Exception: st.warning("点赞功能尚未完成数据库函数配置。")
+            if p["user_id"]==user_id() and c2.button("删除帖子",key=f"del_post_{filter_name}_{p['id']}"):
+                delete_own("posts",p['id']); st.toast("帖子已删除"); st.rerun()
     with tab1: show()
     with tab2: show("康复打卡")
     with tab3: show("暖心故事")
@@ -201,12 +297,40 @@ def community():
         elif re.search(banned,text): st.error("内容含联系方式、攻击性表达或不安全建议，请修改后再发布。")
         elif len(text.strip())<5: st.warning("再多写一点吧，至少 5 个字。")
         else:
-            st.session_state.posts.insert(0,{"topic":topic,"text":text.strip(),"likes":0}); st.success("已匿名发布，并通过内容安全检查"); st.rerun()
+            insert_own("posts",{"topic":topic,"content":text.strip(),"likes":0}); st.success("已匿名发布，并安全保存到云端"); st.rerun()
+
+def search_results():
+    query=st.session_state.get("search_query","")
+    if st.button("← 返回首页"): go("首页"); st.rerun()
+    st.title("搜索结果")
+    with st.form("result_search",border=False):
+        c1,c2=st.columns([5,1]); new_q=c1.text_input("搜索内容",value=query,label_visibility="collapsed"); again=c2.form_submit_button("🔍")
+    if again and new_q.strip(): st.session_state.search_query=new_q.strip(); st.rerun()
+    catalog=[
+        ("SDS 抑郁自评量表","了解近期低落体验","AI量表"),("SAS 焦虑自评量表","了解近期焦虑体验","AI量表"),
+        ("成人 ADHD 筛查","注意力与执行功能自评","AI量表"),("焦虑舒缓对话","呼吸练习与情绪梳理","情绪对话"),
+        ("个人健康档案","心情、测评和保存记录","健康档案"),("医生问诊","精神科与心理咨询","医生问诊"),
+        ("康复打卡与暖心故事","匿名正向社区","正向社区")]
+    results=[x for x in catalog if query.lower() in (x[0]+x[1]+x[2]).lower()]
+    if not results: st.info(f"没有找到与“{query}”相关的内容，可以尝试“焦虑”“医生”“测评”等关键词。")
+    for i,(title,desc,target) in enumerate(results):
+        card(title,desc,target)
+        if st.button(f"打开 {title}",key=f"search_{i}"): go(target); st.rerun()
 
 init_state()
+try: get_supabase()
+except Exception:
+    st.error("未找到有效的 Supabase 配置。请在 Streamlit Secrets 中设置 SUPABASE_URL 和 SUPABASE_KEY。")
+    st.stop()
+if "auth_user" not in st.session_state:
+    auth_screen(); st.stop()
 st.markdown("<div class='muted'>🌤️ 晴途 QINGTU · 心理健康陪伴</div>",unsafe_allow_html=True)
+top1,top2=st.columns([4,1])
+top1.caption(f"已登录：{st.session_state.auth_user.email}")
+if top2.button("退出"):
+    get_supabase().auth.sign_out(); st.session_state.pop("auth_user",None); st.session_state.pop("supabase_client",None); st.rerun()
 page=st.session_state.page
-{"首页":home,"AI量表":assessment,"情绪对话":chat,"健康档案":records,"医生问诊":doctors,"正向社区":community}[page]()
+{"首页":home,"AI量表":assessment,"情绪对话":chat,"健康档案":records,"医生问诊":doctors,"正向社区":community,"搜索结果":search_results,"咨询医生":consultation}[page]()
 footer()
 st.divider()
 cols=st.columns(6)
