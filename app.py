@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import re
 import random
+import html
 from zoneinfo import ZoneInfo
 
 import altair as alt
@@ -69,26 +70,44 @@ def personal_content(content_key, choices):
 
 def personal_editor(label, content_key, choices, preset_tags):
     row=personal_content(content_key,choices)
-    card(row["title"],row["body"],"|".join(row.get("tags") or []))
-    a,b=st.columns(2)
-    if a.button("✏️ 编辑",key=f"edit_{content_key}"):
-        st.session_state[f"editing_{content_key}"]=not st.session_state.get(f"editing_{content_key}",False)
-    if b.button("✨ AI 随机生成（占位）",key=f"random_{content_key}"):
-        title,body,tags=random.choice(choices)
-        get_supabase().table("personal_contents").update({"title":title,"body":body,"tags":tags,"updated_at":datetime.now(LOCAL_TZ).isoformat()}).eq("id",row["id"]).eq("user_id",user_id()).execute()
-        st.toast("已使用本地预设随机生成；尚未接入 AI 大模型"); st.rerun()
-    if st.session_state.get(f"editing_{content_key}",False):
-        with st.form(f"form_{content_key}"):
-            title=st.text_input("标题",value=row["title"])
-            body=st.text_area("内容",value=row["body"])
-            existing=row.get("tags") or []
-            selected=st.multiselect("标签（可多选）",preset_tags,default=[x for x in existing if x in preset_tags])
-            custom=st.text_input("自定义标签（多个请用逗号分隔）",value=",".join(x for x in existing if x not in preset_tags))
-            save=st.form_submit_button("保存修改",type="primary")
-        if save:
-            tags=list(dict.fromkeys(selected+[x.strip() for x in re.split(r"[,，]",custom) if x.strip()]))
-            get_supabase().table("personal_contents").update({"title":title.strip() or label,"body":body.strip(),"tags":tags,"updated_at":datetime.now(LOCAL_TZ).isoformat()}).eq("id",row["id"]).eq("user_id",user_id()).execute()
-            st.session_state[f"editing_{content_key}"]=False; st.toast("已保存"); st.rerun()
+    editing_key=f"editing_{content_key}"
+    title_key=f"edit_title_{content_key}"; body_key=f"edit_body_{content_key}"
+    tags_key=f"edit_tags_{content_key}"; custom_key=f"edit_custom_{content_key}"
+    if not st.session_state.get(editing_key,False):
+        with st.container(border=True):
+            title_col,edit_col=st.columns([4.5,1.35],vertical_alignment="center")
+            title_col.markdown(f"**{html.escape(row['title'])}**")
+            if edit_col.button("✏️ 编辑",key=f"edit_{content_key}",use_container_width=True):
+                existing=row.get("tags") or []; custom=[x for x in existing if x not in preset_tags]
+                st.session_state[title_key]=row["title"]; st.session_state[body_key]=row["body"]
+                st.session_state[tags_key]=[x for x in existing if x in preset_tags]+(["自定义"] if custom else [])
+                st.session_state[custom_key]="，".join(custom); st.session_state[editing_key]=True; st.rerun()
+            st.markdown(f'<div class="muted">{html.escape(row["body"])}</div>',unsafe_allow_html=True)
+            st.markdown("".join(f'<span class="tag">{html.escape(tag)}</span>' for tag in (row.get("tags") or [])),unsafe_allow_html=True)
+        return
+
+    with st.container(border=True):
+        title_col,random_col=st.columns([4.5,1.8],vertical_alignment="bottom")
+        title=title_col.text_input("标题",key=title_key)
+        if random_col.button("✨ 随机生成",key=f"random_{content_key}",help="AI 功能占位：目前从本地预设中随机选择",use_container_width=True):
+            new_title,new_body,new_tags=random.choice(choices); custom=[x for x in new_tags if x not in preset_tags]
+            st.session_state[title_key]=new_title; st.session_state[body_key]=new_body
+            st.session_state[tags_key]=[x for x in new_tags if x in preset_tags]+(["自定义"] if custom else [])
+            st.session_state[custom_key]="，".join(custom); st.toast("已载入本地随机内容；尚未接入 AI 大模型"); st.rerun()
+        body=st.text_area("内容",key=body_key)
+        selected=st.multiselect("标签（可多选）",preset_tags+["自定义"],key=tags_key)
+        custom=""
+        if "自定义" in selected:
+            custom=st.text_input("输入自定义标签（多个请用逗号分隔）",key=custom_key)
+        save_col,cancel_col=st.columns(2)
+        save=save_col.button("保存",type="primary",key=f"save_{content_key}",use_container_width=True)
+        cancel=cancel_col.button("取消",key=f"cancel_{content_key}",use_container_width=True)
+    if save:
+        tags=list(dict.fromkeys([x for x in selected if x!="自定义"]+[x.strip() for x in re.split(r"[,，]",custom) if x.strip()]))
+        get_supabase().table("personal_contents").update({"title":title.strip() or label,"body":body.strip(),"tags":tags,"updated_at":datetime.now(LOCAL_TZ).isoformat()}).eq("id",row["id"]).eq("user_id",user_id()).execute()
+        st.session_state[editing_key]=False; st.toast("已保存"); st.rerun()
+    if cancel:
+        st.session_state[editing_key]=False; st.rerun()
 
 def auth_screen():
     st.markdown('<div class="hero"><h2>欢迎来到晴途 🌤️</h2><div>登录后，你的记录会安全地保存在云端，并与其他用户隔离。</div></div>',unsafe_allow_html=True)
