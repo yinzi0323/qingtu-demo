@@ -16,6 +16,10 @@ h1 { font-size:1.65rem !important; } h2 { font-size:1.25rem !important; }
 [data-testid="stMetric"] { background:#fffdf8; border-radius:16px; padding:.7rem; border:1px solid #e0ecec; }
 [data-testid="stFileUploader"] { background:#fffdf8; padding:.5rem; border-radius:16px; }
 .footer-note { text-align:center; color:#789095; font-size:.75rem; padding:1.2rem 0; }
+.room-me,.room-other { max-width:82%; padding:.72rem .9rem; border-radius:17px; margin:.55rem 0; line-height:1.55; }
+.room-me { margin-left:auto; color:#214f59; background:#cfe9ed; border-bottom-right-radius:5px; }
+.room-other { margin-right:auto; color:#4d443d; background:#fffdf8; border:1px solid #e5ddd1; border-bottom-left-radius:5px; }
+.room-name { font-size:.78rem; font-weight:700; opacity:.75; margin-bottom:.2rem; }
 @keyframes pageIn { from { opacity:0; transform:translateY(12px) scale(.992); } to { opacity:1; transform:none; } }
 [data-testid="stMainBlockContainer"] { animation:pageIn .42s cubic-bezier(.22,.8,.3,1); }
 .search-shell { background:white; border:1px solid #d7e6e8; border-radius:18px; padding:.2rem; box-shadow:0 5px 16px #496c7312; }

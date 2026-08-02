@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import re
+import random
+from zoneinfo import ZoneInfo
 
 import altair as alt
 import pandas as pd
@@ -14,6 +16,8 @@ with open(Path(__file__).with_name("styles.css"), encoding="utf-8") as f:
 
 PAGES = ["首页", "AI量表", "情绪对话", "健康档案", "医生问诊", "正向社区"]
 ICONS = ["🏠", "📝", "💬", "📊", "🩺", "🌱"]
+LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+MOOD_SCORES = {"暴雨":1,"阴天":2,"多云":3,"微晴":4,"晴朗":5}
 def get_supabase():
     if "supabase_client" not in st.session_state:
         st.session_state.supabase_client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -31,6 +35,60 @@ def fetch_own(table, **filters):
 
 def delete_own(table, row_id):
     return get_supabase().table(table).delete().eq("id",row_id).eq("user_id",user_id()).execute()
+
+def local_datetime(value):
+    if not value: return datetime.now(LOCAL_TZ)
+    parsed=datetime.fromisoformat(str(value).replace("Z","+00:00"))
+    if parsed.tzinfo is None: parsed=parsed.replace(tzinfo=ZoneInfo("UTC"))
+    return parsed.astimezone(LOCAL_TZ)
+
+def rows_on_date(rows, selected):
+    return [row for row in rows if local_datetime(row.get("created_at")).date()==selected]
+
+def save_mood_note(row_id, state_key):
+    get_supabase().table("moods").update({"note":st.session_state.get(state_key,"")}).eq("id",row_id).eq("user_id",user_id()).execute()
+    st.toast("备注已保存")
+
+ACTION_CHOICES=[
+    ("60 秒呼吸练习","吸气 4 秒 · 停留 2 秒 · 呼气 6 秒，重复 5 次。",["舒缓焦虑","随时可做"]),
+    ("把任务缩小一步","选择一件事，只完成能在 10 分钟内结束的第一小步。",["缓解拖延","轻量行动"]),
+    ("两分钟身体扫描","放松额头、肩膀和手掌，留意身体此刻最需要什么。",["正念","放松"]),
+]
+NOTE_CHOICES=[
+    ("给自己的便签","我不必今天解决所有事情，只需要走好下一小步。",["自我关怀"]),
+    ("给自己的便签","慢一点也算前进，我可以按自己的节奏来。",["温柔提醒"]),
+    ("给自己的便签","今天的感受值得被看见，也允许被安放。",["接纳情绪"]),
+]
+
+def personal_content(content_key, choices):
+    rows=fetch_own("personal_contents",content_key=content_key)
+    if rows: return rows[0]
+    title,body,tags=choices[datetime.now(LOCAL_TZ).date().toordinal()%len(choices)]
+    inserted=insert_own("personal_contents",{"content_key":content_key,"title":title,"body":body,"tags":tags})
+    return inserted[0]
+
+def personal_editor(label, content_key, choices, preset_tags):
+    row=personal_content(content_key,choices)
+    card(row["title"],row["body"],"|".join(row.get("tags") or []))
+    a,b=st.columns(2)
+    if a.button("✏️ 编辑",key=f"edit_{content_key}"):
+        st.session_state[f"editing_{content_key}"]=not st.session_state.get(f"editing_{content_key}",False)
+    if b.button("✨ AI 随机生成（占位）",key=f"random_{content_key}"):
+        title,body,tags=random.choice(choices)
+        get_supabase().table("personal_contents").update({"title":title,"body":body,"tags":tags,"updated_at":datetime.now(LOCAL_TZ).isoformat()}).eq("id",row["id"]).eq("user_id",user_id()).execute()
+        st.toast("已使用本地预设随机生成；尚未接入 AI 大模型"); st.rerun()
+    if st.session_state.get(f"editing_{content_key}",False):
+        with st.form(f"form_{content_key}"):
+            title=st.text_input("标题",value=row["title"])
+            body=st.text_area("内容",value=row["body"])
+            existing=row.get("tags") or []
+            selected=st.multiselect("标签（可多选）",preset_tags,default=[x for x in existing if x in preset_tags])
+            custom=st.text_input("自定义标签（多个请用逗号分隔）",value=",".join(x for x in existing if x not in preset_tags))
+            save=st.form_submit_button("保存修改",type="primary")
+        if save:
+            tags=list(dict.fromkeys(selected+[x.strip() for x in re.split(r"[,，]",custom) if x.strip()]))
+            get_supabase().table("personal_contents").update({"title":title.strip() or label,"body":body.strip(),"tags":tags,"updated_at":datetime.now(LOCAL_TZ).isoformat()}).eq("id",row["id"]).eq("user_id",user_id()).execute()
+            st.session_state[f"editing_{content_key}"]=False; st.toast("已保存"); st.rerun()
 
 def auth_screen():
     st.markdown('<div class="hero"><h2>欢迎来到晴途 🌤️</h2><div>登录后，你的记录会安全地保存在云端，并与其他用户隔离。</div></div>',unsafe_allow_html=True)
@@ -104,7 +162,7 @@ def safety():
     st.markdown('<div class="danger">🛟 如果你正有伤害自己或他人的想法，请立即联系当地急救电话（中国大陆 120/110）、前往最近急诊，或联系可信赖的人陪伴。请勿独自承担。</div>', unsafe_allow_html=True)
 def footer():
     with st.expander("隐私与使用说明"):
-        st.write("本 Demo 默认仅在当前浏览器会话中保存输入，不会主动上传至外部服务。正式产品应采用加密、最小化采集、访问审计及明确授权机制。")
+        st.write("登录后的个人记录保存在 Supabase 云端，并通过用户身份与行级安全策略隔离；社区帖子与互助房间消息属于登录用户可见的共享内容。请勿填写不必要的身份证件、住址等敏感信息。")
         st.warning("晴途提供心理健康教育与自我觉察支持，不构成医疗诊断、治疗建议或紧急救援服务。量表结果仅供参考。")
     st.markdown('<div class="footer-note">晴途 · 每一步，都算向晴天靠近</div>', unsafe_allow_html=True)
 
@@ -130,8 +188,11 @@ def home():
         if st.button("💬 找 AI 聊聊"): go("情绪对话"); st.rerun()
         if st.button("🩺 咨询医生"): go("医生问诊"); st.rerun()
     st.subheader("今日微行动")
-    card("60 秒呼吸练习", "吸气 4 秒 · 停留 2 秒 · 呼气 6 秒，重复 5 次。", "舒缓焦虑|随时可做")
-    card("给自己的便签", "“我不必今天解决所有事情，只需要走好下一小步。”", "自我关怀")
+    today_key=f"daily-action:{datetime.now(LOCAL_TZ).date().isoformat()}"
+    personal_editor("今日微行动",today_key,ACTION_CHOICES,["舒缓焦虑","随时可做","缓解拖延","轻量行动","正念","放松"])
+    st.caption("今日微行动每天 00:00（北京时间）更新；“AI 随机生成”目前使用本地预设内容。")
+    personal_editor("给自己的便签","personal-note",NOTE_CHOICES,["自我关怀","温柔提醒","接纳情绪","给自己打气"])
+    st.caption("给自己的便签会持续保留，不会随日期自动更换。")
     st.subheader("晴途工具箱")
     tools=[("⏱️ ADHD 专注助手","专注助手"),("🌙 睡眠改善","睡眠助手"),("💊 药物打卡","药物打卡"),("📄 复诊简报","复诊简报"),("📚 心理科普","科普知识库"),("🫶 互助房间","互助房间")]
     for i in range(0,len(tools),2):
@@ -202,41 +263,76 @@ def chat():
 
 def records():
     st.title("个人健康档案")
-    st.caption("你拥有自己的健康数据；以下均为 Demo 会话内数据。")
-    dates=[date.today()-timedelta(days=i) for i in range(6,-1,-1)]
-    values=[3,2,3,4,3,4,4]
-    mood_df=pd.DataFrame({"日期":dates,"心情指数":values})
-    st.altair_chart(alt.Chart(mood_df).mark_line(point=True,color="#6EA8B7").encode(x=alt.X("日期:T",title=None),y=alt.Y("心情指数:Q",scale=alt.Scale(domain=[1,5])),tooltip=["日期:T","心情指数"]).properties(height=220),use_container_width=True)
+    st.caption("图表与记录来自你的云端数据，并与其他用户隔离。每日以北京时间 00:00 为界。")
+    moods=fetch_own("moods")
+    points=[]
+    for row in moods:
+        score=MOOD_SCORES.get(row.get("mood"))
+        if score: points.append({"日期":local_datetime(row["created_at"]).date(),"心情指数":score})
+    if points:
+        raw=pd.DataFrame(points)
+        mood_df=raw.groupby("日期",as_index=False).agg(平均心情=("心情指数","mean"),记录次数=("心情指数","size"))
+        mood_df=mood_df.sort_values("日期").tail(14)
+        chart=alt.Chart(mood_df).mark_line(point=True,color="#6EA8B7").encode(
+            x=alt.X("日期:T",title=None),y=alt.Y("平均心情:Q",scale=alt.Scale(domain=[1,5]),title="心情指数"),
+            tooltip=[alt.Tooltip("日期:T",title="日期"),alt.Tooltip("平均心情:Q",format=".2f"),alt.Tooltip("记录次数:Q",title="当日记录次数")]
+        ).properties(height=220)
+        st.altair_chart(chart,use_container_width=True)
+    else:
+        mood_df=pd.DataFrame(columns=["日期","平均心情","记录次数"]); st.info("记录心情后，这里会生成真实趋势图。")
     c1,c2,c3=st.columns(3)
-    c1.metric("连续记录","7 天"); c2.metric("平均心情","3.3 / 5"); c3.metric("本周睡眠","6.8h")
+    recorded_days=set(mood_df["日期"].tolist()) if not mood_df.empty else set(); cursor=datetime.now(LOCAL_TZ).date(); streak=0
+    while cursor in recorded_days: streak+=1; cursor-=timedelta(days=1)
+    today_rows=rows_on_date(moods,datetime.now(LOCAL_TZ).date())
+    today_scores=[MOOD_SCORES[x["mood"]] for x in today_rows if x.get("mood") in MOOD_SCORES]
+    try:
+        sleeps=fetch_own("sleep_logs"); week_start=datetime.now(LOCAL_TZ).date()-timedelta(days=6)
+        week_sleep=[float(x["duration_hours"]) for x in sleeps if date.fromisoformat(str(x["log_date"])[:10])>=week_start]
+    except Exception: week_sleep=[]
+    c1.metric("连续记录",f"{streak} 天"); c2.metric("今日平均心情",f"{sum(today_scores)/len(today_scores):.1f} / 5" if today_scores else "暂无"); c3.metric("近7日平均睡眠",f"{sum(week_sleep)/len(week_sleep):.1f}h" if week_sleep else "暂无")
     st.subheader("病历与报告")
     files=st.file_uploader("上传病历、处方或检查报告",type=["pdf","png","jpg","jpeg"],accept_multiple_files=True,help="单文件不超过 20MB；Demo 仅显示文件名")
     if files and st.button("确认保存文件记录",type="primary"):
         st.session_state["medical_files"]=[f.name for f in files]; st.success(f"已记录 {len(files)} 个文件（Demo 不做云端上传）")
-    st.subheader("心情记录")
-    moods=fetch_own("moods")
-    if moods:
-        for row in moods:
-            a,b=st.columns([5,1]); a.write(f"{row['created_at'][:16]}　**{row['mood']}**")
+    h1,h2=st.columns([4,2]); h1.subheader("心情记录")
+    if h2.button("📅 查看往期" if not st.session_state.get("mood_history") else "返回今天",key="toggle_mood_history"):
+        st.session_state.mood_history=not st.session_state.get("mood_history",False); st.rerun()
+    selected_mood_date=st.date_input("选择心情记录日期",value=datetime.now(LOCAL_TZ).date(),key="mood_history_date") if st.session_state.get("mood_history") else datetime.now(LOCAL_TZ).date()
+    visible_moods=rows_on_date(moods,selected_mood_date)
+    if visible_moods:
+        for row in visible_moods:
+            local=local_datetime(row["created_at"]); a,n,b=st.columns([2.2,3.8,1.2])
+            a.write(f"{local:%H:%M}　**{row['mood']}**")
+            note_key=f"mood_note_{row['id']}"
+            n.text_input("备注",value=row.get("note") or "",key=note_key,placeholder="添加备注，回车或离开输入框保存",label_visibility="collapsed",on_change=save_mood_note,args=(row["id"],note_key))
             if b.button("删除",key=f"del_mood_{row['id']}"):
                 delete_own("moods",row['id']); st.toast("心情记录已删除"); st.rerun()
-    else: st.info("暂无心情记录。")
-    st.subheader("历史测评")
+    else: st.info(f"{selected_mood_date:%Y-%m-%d} 暂无心情记录。")
+    h1,h2=st.columns([4,2]); h1.subheader("历史测评")
+    if h2.button("📅 选择日期" if not st.session_state.get("assessment_history") else "返回今天",key="toggle_assessment_history"):
+        st.session_state.assessment_history=not st.session_state.get("assessment_history",False); st.rerun()
+    selected_assess_date=st.date_input("选择测评日期",value=datetime.now(LOCAL_TZ).date(),key="assessment_history_date") if st.session_state.get("assessment_history") else datetime.now(LOCAL_TZ).date()
     assessments=fetch_own("assessments")
-    if assessments:
-        for row in assessments:
-            a,b=st.columns([5,1]); a.write(f"{row['created_at'][:10]}　**{row['scale']} · {row['score']} 分**　{row['level']}")
+    visible_assessments=rows_on_date(assessments,selected_assess_date)
+    if visible_assessments:
+        for row in visible_assessments:
+            a,b=st.columns([5,1]); a.write(f"{local_datetime(row['created_at']):%H:%M}　**{row['scale']} · {row['score']} 分**　{row['level']}")
             if b.button("删除",key=f"del_assess_{row['id']}"):
                 delete_own("assessments",row['id']); st.toast("测评记录已删除"); st.rerun()
-    else: st.info("还没有测评记录。完成任一量表后会显示在这里。")
+    else: st.info(f"{selected_assess_date:%Y-%m-%d} 没有测评记录。")
     notes=fetch_own("notes")
-    if notes:
-        st.subheader("保存的记录")
-        for row in notes:
+    h1,h2=st.columns([4,2]); h1.subheader("保存的 AI 对话")
+    if h2.button("📅 选择日期" if not st.session_state.get("note_history") else "返回今天",key="toggle_note_history"):
+        st.session_state.note_history=not st.session_state.get("note_history",False); st.rerun()
+    selected_note_date=st.date_input("选择对话保存日期",value=datetime.now(LOCAL_TZ).date(),key="note_history_date") if st.session_state.get("note_history") else datetime.now(LOCAL_TZ).date()
+    visible_notes=rows_on_date(notes,selected_note_date)
+    if visible_notes:
+        for row in visible_notes:
             with st.expander(f"{row['category']} · {row['created_at'][:16]}"):
                 st.write(row["content"])
                 if st.button("删除这条记录",key=f"del_note_{row['id']}"):
                     delete_own("notes",row['id']); st.rerun()
+    else: st.info(f"{selected_note_date:%Y-%m-%d} 没有保存的 AI 对话。")
     if st.button("去完成一次测评"): go("AI量表"); st.rerun()
 
 def doctors():
@@ -358,9 +454,9 @@ routes={"首页":home,"AI量表":assessment,"情绪对话":chat,"健康档案":r
         "专注助手":lambda:focus_page(*feature_args),"睡眠助手":lambda:sleep_page(*feature_args),"药物打卡":lambda:medication_page(*feature_args),
         "复诊简报":lambda:report_page(get_supabase(),user_id(),st.session_state.auth_user.email,go),"科普知识库":lambda:knowledge_page(go),"互助房间":lambda:room_page(*feature_args)}
 routes[page]()
-footer()
 st.divider()
 cols=st.columns(6)
 for col,p,icon in zip(cols,PAGES,ICONS):
     if col.button(f"{icon}\n{p.replace('AI','')}",key=f"nav_{p}",type="primary" if page==p else "secondary"):
         go(p); st.rerun()
+footer()

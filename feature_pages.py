@@ -97,9 +97,23 @@ def sleep_page(sb, uid, go):
         if float(latest["duration_hours"])<7: tips.append("尝试固定起床时间，每次仅把上床时间提前 15 分钟。")
         st.subheader("今晚的小方案"); st.info("\n\n".join(tips or ["当前记录较平稳，继续保持固定起床时间，并观察一周趋势。"]))
         df=pd.DataFrame(logs); df["log_date"]=pd.to_datetime(df["log_date"]); st.line_chart(df.set_index("log_date")[["duration_hours"]],color="#6EA8B7")
-    st.subheader("助眠白噪音")
-    components.html("""<div style="text-align:center"><button id="b" onclick="toggle()" style="padding:12px 24px;border:0;border-radius:15px;background:#6ea8b7;color:white">▶ 播放柔和白噪音</button></div><script>
-    let ctx,src,gain,on=false; function toggle(){if(!on){ctx=new AudioContext();let size=ctx.sampleRate*2,buf=ctx.createBuffer(1,size,ctx.sampleRate),d=buf.getChannelData(0);for(let i=0;i<size;i++)d[i]=(Math.random()*2-1)*.18;src=ctx.createBufferSource();src.buffer=buf;src.loop=true;gain=ctx.createGain();gain.gain.value=.3;src.connect(gain).connect(ctx.destination);src.start();on=true;b.innerText='■ 停止白噪音'}else{src.stop();ctx.close();on=false;b.innerText='▶ 播放柔和白噪音'}}</script>""",height=70)
+    st.subheader("助眠声音")
+    components.html("""<div style="font-family:system-ui;text-align:center">
+    <select id="sound" style="padding:10px;border:1px solid #bdd8dc;border-radius:12px;margin-right:8px">
+      <option value="white">柔和白噪音</option><option value="pink">粉红噪音</option>
+      <option value="rain">细雨声</option><option value="ocean">缓慢海浪</option><option value="night">森林夜声</option>
+    </select><button id="b" onclick="toggle()" style="padding:11px 20px;border:0;border-radius:15px;background:#6ea8b7;color:white">▶ 播放</button>
+    </div><script>
+    let ctx,src,gain,filter,lfo,on=false;
+    function toggle(){if(!on){ctx=new AudioContext();let size=ctx.sampleRate*3,buf=ctx.createBuffer(1,size,ctx.sampleRate),d=buf.getChannelData(0),kind=sound.value,last=0;
+      for(let i=0;i<size;i++){let w=Math.random()*2-1;if(kind==='pink'){last=.985*last+.15*w;d[i]=last*.35}else d[i]=w*.18}
+      src=ctx.createBufferSource();src.buffer=buf;src.loop=true;gain=ctx.createGain();gain.gain.value=.28;filter=ctx.createBiquadFilter();
+      if(kind==='rain'){filter.type='highpass';filter.frequency.value=1200}else if(kind==='ocean'){filter.type='lowpass';filter.frequency.value=650}else if(kind==='night'){filter.type='bandpass';filter.frequency.value=2400;gain.gain.value=.12}else{filter.type='lowpass';filter.frequency.value=kind==='pink'?1800:5000}
+      src.connect(filter).connect(gain).connect(ctx.destination);
+      if(kind==='ocean'){lfo=ctx.createOscillator();let lg=ctx.createGain();lfo.frequency.value=.09;lg.gain.value=.18;lfo.connect(lg).connect(gain.gain);lfo.start()}
+      src.start();on=true;b.innerText='■ 停止';sound.disabled=true
+    }else{src.stop();if(lfo)lfo.stop();ctx.close();on=false;b.innerText='▶ 播放';sound.disabled=false}}
+    </script>""",height=80)
 
 
 def medication_page(sb, uid, go):
@@ -179,7 +193,10 @@ def room_page(sb, uid, go):
     st.info("AI 主持规则（原型）：不评判、不诊断、不提供危险建议；危机内容优先转介紧急支持。")
     messages=sb.table("room_messages").select("*").eq("room_name",room).order("created_at",desc=False).limit(50).execute().data
     for m in messages:
-        st.markdown(f"**匿名晴友**　<span class='muted'>{m['created_at'][11:16]}</span>  \n{m['content']}",unsafe_allow_html=True)
+        mine=str(m.get("user_id"))==str(uid)
+        cls="room-me" if mine else "room-other"; name="我（匿名）" if mine else "匿名晴友"
+        safe_content=html.escape(m.get("content","")).replace("\n","<br>")
+        st.markdown(f"<div class='{cls}'><div class='room-name'>{name} · {m['created_at'][11:16]}</div><div>{safe_content}</div></div>",unsafe_allow_html=True)
     with st.form("room_send",clear_on_submit=True):
         msg=st.text_input("发送正向互助消息",max_chars=200); send=st.form_submit_button("发送")
     if send:
