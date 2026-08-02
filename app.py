@@ -6,6 +6,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from supabase import create_client
+from feature_pages import focus_page, sleep_page, medication_page, report_page, knowledge_page, room_page
 
 st.set_page_config(page_title="晴途", page_icon="🌤️", layout="centered", initial_sidebar_state="collapsed")
 with open(Path(__file__).with_name("styles.css"), encoding="utf-8") as f:
@@ -131,6 +132,12 @@ def home():
     st.subheader("今日微行动")
     card("60 秒呼吸练习", "吸气 4 秒 · 停留 2 秒 · 呼气 6 秒，重复 5 次。", "舒缓焦虑|随时可做")
     card("给自己的便签", "“我不必今天解决所有事情，只需要走好下一小步。”", "自我关怀")
+    st.subheader("晴途工具箱")
+    tools=[("⏱️ ADHD 专注助手","专注助手"),("🌙 睡眠改善","睡眠助手"),("💊 药物打卡","药物打卡"),("📄 复诊简报","复诊简报"),("📚 心理科普","科普知识库"),("🫶 互助房间","互助房间")]
+    for i in range(0,len(tools),2):
+        cols=st.columns(2)
+        for col,(label,target) in zip(cols,tools[i:i+2]):
+            if col.button(label,key=f"tool_{target}"): go(target); st.rerun()
     safety()
 
 def assessment():
@@ -270,24 +277,38 @@ def consultation():
 def community():
     st.title("正向社区")
     st.caption("匿名、友善、非评判。分享经验，不替代专业建议。")
-    tab1,tab2,tab3=st.tabs(["全部","康复打卡","暖心故事"])
+    mood_count=len(fetch_own("moods")); focus_count=len(fetch_own("focus_sessions")) if "auth_user" in st.session_state else 0
+    badges=[]
+    if mood_count>=3: badges.append("🌤️ 情绪觉察新星")
+    if mood_count>=7: badges.append("🌈 七日坚持")
+    if focus_count>=3: badges.append("🎯 专注行动派")
+    if badges: st.markdown("我的里程碑："+" ".join(f'<span class="tag">{b}</span>' for b in badges),unsafe_allow_html=True)
+    tab1,tab2,tab3,tab4=st.tabs(["全部","康复打卡","暖心故事","互助交流"])
     def show(filter_name=None):
         posts=get_supabase().table("posts").select("*").order("created_at",desc=True).execute().data
         for p in posts:
             if filter_name and p["topic"]!=filter_name: continue
-            card(f"匿名晴友 · {p['topic']}",p["content"],f"🤍 {p['likes']} 次拥抱")
-            c1,c2=st.columns(2)
-            if c1.button("送一个拥抱",key=f"like_{filter_name}_{p['id']}"):
-                try: get_supabase().rpc("increment_post_likes",{"post_id":p['id']}).execute(); st.toast("你的温暖已送达"); st.rerun()
-                except Exception: st.warning("点赞功能尚未完成数据库函数配置。")
-            if p["user_id"]==user_id() and c2.button("删除帖子",key=f"del_post_{filter_name}_{p['id']}"):
+            reactions=get_supabase().table("post_reactions").select("emoji,user_id").eq("post_id",p["id"]).execute().data
+            counts={e:sum(1 for r in reactions if r["emoji"]==e) for e in ["🤍","🌤️","💪","🫂"]}
+            card(f"匿名晴友 · {p['topic']}",p["content"],f"{p.get('subtopic','康复感悟')}")
+            cols=st.columns(4)
+            for col,emoji in zip(cols,["🤍","🌤️","💪","🫂"]):
+                if col.button(f"{emoji} {counts[emoji]}",key=f"react_{filter_name}_{p['id']}_{emoji}"):
+                    mine=[r for r in reactions if r["emoji"]==emoji and r["user_id"]==user_id()]
+                    q=get_supabase().table("post_reactions")
+                    if mine: q.delete().eq("post_id",p["id"]).eq("user_id",user_id()).eq("emoji",emoji).execute()
+                    else: q.insert({"post_id":p["id"],"user_id":user_id(),"emoji":emoji}).execute()
+                    st.rerun()
+            if p["user_id"]==user_id() and st.button("删除我的帖子",key=f"del_post_{filter_name}_{p['id']}"):
                 delete_own("posts",p['id']); st.toast("帖子已删除"); st.rerun()
     with tab1: show()
     with tab2: show("康复打卡")
     with tab3: show("暖心故事")
+    with tab4: show("互助交流")
     st.subheader("匿名发布")
     with st.form("post"):
         topic=st.selectbox("内容分类",["康复打卡","暖心故事","互助交流"])
+        subtopic=st.selectbox("细分话题",["服药日常","学生适配","职场适配","亲子相处","康复感悟","焦虑互助","抑郁陪伴","ADHD 同行"])
         text=st.text_area("想分享什么？",max_chars=500,placeholder="记录一个小进步，或留下一句温暖的话……")
         post=st.form_submit_button("AI 安全检查并发布",type="primary")
     if post:
@@ -297,7 +318,9 @@ def community():
         elif re.search(banned,text): st.error("内容含联系方式、攻击性表达或不安全建议，请修改后再发布。")
         elif len(text.strip())<5: st.warning("再多写一点吧，至少 5 个字。")
         else:
-            insert_own("posts",{"topic":topic,"content":text.strip(),"likes":0}); st.success("已匿名发布，并安全保存到云端"); st.rerun()
+            supportive=""
+            if re.search(r"很累|撑不住|没人理解|好难受",text): supportive="\n\n🌤️ 晴途提醒：谢谢你说出来。你可以进入“互助房间”或“情绪对话”，让这份感受被继续接住。"
+            insert_own("posts",{"topic":topic,"subtopic":subtopic,"content":text.strip()+supportive,"likes":0}); st.success("已匿名发布，并通过双层安全检查"); st.rerun()
 
 def search_results():
     query=st.session_state.get("search_query","")
@@ -330,7 +353,11 @@ top1.caption(f"已登录：{st.session_state.auth_user.email}")
 if top2.button("退出"):
     get_supabase().auth.sign_out(); st.session_state.pop("auth_user",None); st.session_state.pop("supabase_client",None); st.rerun()
 page=st.session_state.page
-{"首页":home,"AI量表":assessment,"情绪对话":chat,"健康档案":records,"医生问诊":doctors,"正向社区":community,"搜索结果":search_results,"咨询医生":consultation}[page]()
+feature_args=(get_supabase(),user_id(),go)
+routes={"首页":home,"AI量表":assessment,"情绪对话":chat,"健康档案":records,"医生问诊":doctors,"正向社区":community,"搜索结果":search_results,"咨询医生":consultation,
+        "专注助手":lambda:focus_page(*feature_args),"睡眠助手":lambda:sleep_page(*feature_args),"药物打卡":lambda:medication_page(*feature_args),
+        "复诊简报":lambda:report_page(get_supabase(),user_id(),st.session_state.auth_user.email,go),"科普知识库":lambda:knowledge_page(go),"互助房间":lambda:room_page(*feature_args)}
+routes[page]()
 footer()
 st.divider()
 cols=st.columns(6)

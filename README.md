@@ -4,6 +4,8 @@
 
 V3 加入首页搜索、页面平滑动画、Supabase Auth 邮箱注册登录、PostgreSQL 公网持久化与 RLS 用户隔离；医生选择后会直接进入独立咨询页。
 
+V4 扩展社区第四分类、表情反应、细分话题与里程碑勋章，并加入 ADHD 任务拆解/番茄钟、睡眠记录/白噪音、服药提醒/副作用记录、复诊 PDF、心理科普和匿名互助房间。
+
 > 重要：本项目只用于产品原型演示，不提供医疗诊断、治疗或紧急救援。演示中的医生信息、响应时间、趋势数据均为虚构示例。
 
 ## 在 PyCharm 中运行
@@ -48,8 +50,11 @@ Windows 也可以双击 `run_windows.bat`（需先确保 Python 已加入 PATH�
 qingtu-ai-demo/
 ├─ .streamlit/config.toml   # 主题与服务配置
 ├─ app.py                   # 六页面及全部交互逻辑
+├─ feature_pages.py         # 专注、睡眠、药物、简报、科普与互助房间
+├─ pdf_report.py            # 中文复诊简报 PDF 生成器
 ├─ styles.css               # 移动端小程序视觉样式
 ├─ supabase_like_function.sql # 社区点赞数据库函数
+├─ supabase_v4_migration.sql  # V4 新表、字段及 RLS 策略
 ├─ requirements.txt         # Python 依赖
 ├─ run_windows.bat          # Windows 一键启动
 └─ README.md                # 使用说明
@@ -58,3 +63,7 @@ qingtu-ai-demo/
 ## Supabase 配置
 
 在 Streamlit Cloud Secrets 或本地 `.streamlit/secrets.toml` 中配置 `SUPABASE_URL` 和 `SUPABASE_KEY`。只能使用 publishable/anon key，禁止使用 secret/service_role key。数据库需先创建 README 所述五张表与 RLS 策略，并执行 `supabase_like_function.sql`。所有私人查询同时受应用过滤和数据库 RLS 保护。
+
+升级 V4 时，必须先在 Supabase SQL Editor 执行一次 `supabase_v4_migration.sql`，再上传新版 `app.py`、`feature_pages.py`、`pdf_report.py`、`requirements.txt` 和 `styles.css`。否则新页面会因数据表不存在而报错。
+
+番茄钟和白噪音在浏览器当前页面内运行；网页关闭后无法后台提醒。任务拆解、睡眠建议和社区二层引导当前使用本地规则，已经预留为后续大模型生成层的替换位置。
